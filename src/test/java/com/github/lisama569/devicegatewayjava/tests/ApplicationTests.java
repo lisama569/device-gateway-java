@@ -2,14 +2,12 @@ package com.github.lisama569.devicegatewayjava.tests;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.TestPropertySource;
 
-/**
- * @author Vincent
- * @version 1.0
- */
 @SpringBootTest
-public class ApplicationTests {
+@TestPropertySource(properties = "gateway.port=0")
+class ApplicationTests {
     @Test
-    public void contentLoad() {
+    void contextLoads() {
     }
 }
