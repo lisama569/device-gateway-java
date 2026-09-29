@@ -9,6 +9,8 @@ public enum GatewayErrorCode {
     FRAME_TOO_LONG(1004, "declared frame length exceeds limit"),
     CRC_MISMATCH(1005, "crc16 checksum mismatch"),
     MALFORMED_PAYLOAD(1006, "malformed payload"),
+    /** 协商请求中带了网关无法识别/不支持的能力项。 */
+    UNSUPPORTED_CAPABILITY(1007, "unrecognized or unsupported capability offered"),
     NOT_AUTHENTICATED(2001, "session not authenticated"),
     SESSION_CONFLICT(2002, "duplicate login on another connection"),
     SESSION_CLOSED(2003, "session closed"),
@@ -16,6 +18,12 @@ public enum GatewayErrorCode {
     SEQ_OUT_OF_ORDER(2005, "sequence out of order or rolled back beyond window"),
     SEQ_OVERFLOW(2006, "sequence number overflow"),
     RETRY_EXHAUSTED(2007, "downlink retry count exhausted, session terminated"),
+    /** 协商未完成就发业务帧（连接保留，允许其回头完成协商）。 */
+    NEGOTIATION_REQUIRED(2008, "capability negotiation required before any business frame"),
+    /** 已协商会话使用了未谈拢的能力/扩展（连接保留，单帧拒绝）。 */
+    CAPABILITY_VIOLATION(2009, "frame uses a capability/extension not agreed in this session"),
+    /** 协商已定稿后再次发起协商/试图改写版本与能力。 */
+    NEGOTIATION_SETTLED(2010, "negotiation already settled for this session"),
     CREDENTIAL_MISSING(3001, "device credentials missing"),
     CREDENTIAL_INVALID(3002, "invalid credentials"),
     CREDENTIAL_EXPIRED(3003, "credentials expired"),

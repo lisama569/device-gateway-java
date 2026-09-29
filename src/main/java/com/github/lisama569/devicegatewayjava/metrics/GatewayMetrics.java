@@ -17,6 +17,26 @@ public final class GatewayMetrics {
     private final AtomicLong sessionsTerminatedByRetry = new AtomicLong();
     private final AtomicLong activeSessions = new AtomicLong();
 
+    // 能力协商三分类计数（与连接最终“谈成/版本无交集/能力不识别”一一对应）
+    private final AtomicLong negotiationsSucceeded = new AtomicLong();
+    private final AtomicLong negotiationsVersionFailed = new AtomicLong();
+    private final AtomicLong negotiationsCapabilityFailed = new AtomicLong();
+    /** 接收侧残留超限而被结束的连接次数（4003，按连接容量保护）。 */
+    private final AtomicLong receiveBufferTerminations = new AtomicLong();
+    /** 当前生效的按连接接收残留硬上限（管理接口可见）。 */
+    private volatile long receiveResidualLimitBytes = -1;
+
+    public void negotiationSucceeded() { negotiationsSucceeded.incrementAndGet(); }
+    public void negotiationVersionFailed() { negotiationsVersionFailed.incrementAndGet(); }
+    public void negotiationCapabilityFailed() { negotiationsCapabilityFailed.incrementAndGet(); }
+    public void receiveBufferTerminated() { receiveBufferTerminations.incrementAndGet(); }
+    public void setReceiveResidualLimitBytes(long limit) { this.receiveResidualLimitBytes = limit; }
+
+    public long negotiationsSucceeded() { return negotiationsSucceeded.get(); }
+    public long negotiationsVersionFailed() { return negotiationsVersionFailed.get(); }
+    public long negotiationsCapabilityFailed() { return negotiationsCapabilityFailed.get(); }
+    public long receiveBufferTerminations() { return receiveBufferTerminations.get(); }
+
     public void sessionActive() { activeSessions.incrementAndGet(); }
     public void sessionInactive() { activeSessions.updateAndGet(v -> Math.max(0, v - 1)); }
 
@@ -43,6 +63,11 @@ public final class GatewayMetrics {
         m.put("connectionsRejected", connectionsRejected.sum());
         m.put("sessionsTerminatedByRetry", sessionsTerminatedByRetry.get());
         m.put("activeSessions", (long) activeSessions.get());
+        m.put("negotiationsSucceeded", negotiationsSucceeded.get());
+        m.put("negotiationsVersionFailed", negotiationsVersionFailed.get());
+        m.put("negotiationsCapabilityFailed", negotiationsCapabilityFailed.get());
+        m.put("receiveBufferTerminations", receiveBufferTerminations.get());
+        m.put("receiveResidualLimitBytes", receiveResidualLimitBytes);
         for (Map.Entry<Integer, LongAdder> e : errors.entrySet()) {
             m.put("error[" + e.getKey() + "]", e.getValue().sum());
         }

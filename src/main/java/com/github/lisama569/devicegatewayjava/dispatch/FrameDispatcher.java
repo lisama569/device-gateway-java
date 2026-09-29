@@ -4,6 +4,10 @@ import com.github.lisama569.devicegatewayjava.error.GatewayErrorCode;
 import com.github.lisama569.devicegatewayjava.error.GatewayException;
 import com.github.lisama569.devicegatewayjava.auth.Authenticator;
 import com.github.lisama569.devicegatewayjava.metrics.GatewayMetrics;
+import com.github.lisama569.devicegatewayjava.negotiation.NegotiationFrames;
+import com.github.lisama569.devicegatewayjava.negotiation.NegotiationOutcome;
+import com.github.lisama569.devicegatewayjava.negotiation.NegotiationRequest;
+import com.github.lisama569.devicegatewayjava.negotiation.Negotiator;
 import com.github.lisama569.devicegatewayjava.protocol.ErrorFrames;
 import com.github.lisama569.devicegatewayjava.protocol.Frame;
 import com.github.lisama569.devicegatewayjava.protocol.FrameDecoder;
@@ -22,13 +26,16 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 /**
- * 将已解析帧分发到认证/会话/状态/可靠投递子系统。
+ * 将已解析帧分发到协商/认证/会话/状态/可靠投递子系统。
  * 每条拒绝路径都映射为可区分错误码并记录“判定依据”，且：
- * - 未认证会话永远访问不到 DeviceState；
- * - 重复/乱序/过期在业务状态锁内得出确定结论，绝不静默；
- * - 错误帧不携带任何凭证内容。
+ * - NEGOTIATE 是连接的唯一合法首帧；未协商会话发业务帧 -> 2008（连接保留，可回头协商）；
+ * - 协商失败（版本无交集/能力不识别/负载畸形）发 ERROR 后结束连接，绝不按默认版本硬套；
+ * - 协商定稿即会话硬约束：越权能力/扩展 -> 2009 单帧拒绝，连接与后续合法报文不受影响；
+ * - 定稿后再次 NEGOTIATE -> 2010 稳定拒绝，规则不得中途更换；
+ * - 未认证会话永远访问不到 DeviceState；错误帧不携带任何凭证内容。
  */
 public final class FrameDispatcher {
 
@@ -38,13 +45,15 @@ public final class FrameDispatcher {
     private final SessionRegistry sessions;
     private final DeviceStateStore states;
     private final GatewayMetrics metrics;
+    private final Negotiator negotiator;
 
     public FrameDispatcher(Authenticator authenticator, SessionRegistry sessions,
-                           DeviceStateStore states, GatewayMetrics metrics) {
+                           DeviceStateStore states, GatewayMetrics metrics, Negotiator negotiator) {
         this.authenticator = authenticator;
         this.sessions = sessions;
         this.states = states;
         this.metrics = metrics;
+        this.negotiator = negotiator;
     }
 
     /** 解码层错误 -> 错误帧 + 计数；连接保持。 */
@@ -63,11 +72,12 @@ public final class FrameDispatcher {
                 frame.payload() == null ? 0 : frame.payload().length);
         try {
             switch (frame.type()) {
+                case NEGOTIATE -> handleNegotiate(ctx, frame);
                 case LOGIN -> handleLogin(ctx, frame);
                 case LOGOUT -> handleLogout(ctx, frame);
                 case DATA -> handleData(ctx, frame);
                 case ACK -> handleAck(ctx, frame);
-                case DOWNLINK, ERROR -> sendError(ctx, GatewayErrorCode.MALFORMED_PAYLOAD,
+                case DOWNLINK, ERROR, NEGOTIATE_ACK -> sendError(ctx, GatewayErrorCode.MALFORMED_PAYLOAD,
                         frame.type() + " is not accepted from device", frame.seq());
             }
         } catch (GatewayException e) {
@@ -79,8 +89,82 @@ public final class FrameDispatcher {
         }
     }
 
+    private void handleNegotiate(ConnectionContext ctx, Frame frame) {
+        GatewaySession session = ctx.session();
+        // 协商只能发生在会话开头：已定稿（无论是否已登录）再发 NEGOTIATE，稳定拒绝且不改既有规则
+        if (session.negotiationSettled()) {
+            throw new GatewayException(GatewayErrorCode.NEGOTIATION_SETTLED,
+                    "session already using version " + session.negotiatedVersion()
+                            + " caps=" + session.capabilities().stream().map(Enum::name).toList());
+        }
+
+        final NegotiationRequest request;
+        try {
+            request = NegotiationFrames.parseRequest(frame.payload());
+        } catch (GatewayException malformed) {
+            metrics.error(malformed.errorCode().code());
+            failNegotiation(ctx, frame.seq(), malformed.errorCode(), malformed.getMessage());
+            return;
+        }
+
+        NegotiationOutcome outcome = negotiator.evaluate(request);
+        sendNegotiationAck(ctx, frame.seq(), outcome);
+        switch (outcome.status()) {
+            case AGREED -> {
+                session.settleNegotiation(outcome.selectedVersion(), outcome.selectedCapabilities());
+                metrics.negotiationSucceeded();
+                log.info("negotiation settled conn={} version={} caps={}",
+                        ctx.connectionId(), outcome.selectedVersion(),
+                        outcome.selectedCapabilities().stream().map(Enum::name).toList());
+            }
+            case VERSION_NO_INTERSECTION -> {
+                metrics.negotiationVersionFailed();
+                metrics.error(GatewayErrorCode.VERSION_MISMATCH.code());
+                terminateNegotiation(ctx, frame.seq(), GatewayErrorCode.VERSION_MISMATCH,
+                        "no common protocol version: device=[" + request.minVersion() + ","
+                                + request.maxVersion() + "] gateway=["
+                                + negotiator.gatewayMinVersion() + "," + negotiator.gatewayMaxVersion() + "]");
+            }
+            case UNSUPPORTED_CAPABILITY -> {
+                metrics.negotiationCapabilityFailed();
+                metrics.error(GatewayErrorCode.UNSUPPORTED_CAPABILITY.code());
+                String codes = outcome.unknownCodes().stream()
+                        .map(b -> String.valueOf(b & 0xFF)).collect(Collectors.joining(","));
+                terminateNegotiation(ctx, frame.seq(), GatewayErrorCode.UNSUPPORTED_CAPABILITY,
+                        "unrecognized or unsupported capability code(s): " + codes);
+            }
+        }
+    }
+
+    /** 协商失败的统一收口：NEGOTIATE_ACK（机器可判）+ ERROR（可读原因）发出后结束连接，不留默认规则。 */
+    private void failNegotiation(ConnectionContext ctx, long refSeq, GatewayErrorCode code, String basis) {
+        log.warn("negotiation failed conn={} code={} basis={}", ctx.connectionId(), code.code(), basis);
+        terminateNegotiation(ctx, refSeq, code, basis);
+    }
+
+    /** 保证两份协商结论帧先送达，再结束连接；不计认证指标（连接从未成为正常设备会话）。 */
+    private void terminateNegotiation(ConnectionContext ctx, long refSeq, GatewayErrorCode code, String basis) {
+        sendError(ctx, code, basis, refSeq);
+        ctx.terminateAfterDrain("negotiation failed: " + code.code() + " " + basis);
+    }
+
+    private void sendNegotiationAck(ConnectionContext ctx, long refSeq, NegotiationOutcome outcome) {
+        byte[] raw = FrameCodec.encode(MessageType.NEGOTIATE_ACK, (byte) 0, refSeq,
+                NegotiationFrames.encodeAck(outcome));
+        try {
+            ctx.writeFrame(raw);
+            metrics.frameOut();
+        } catch (IOException e) {
+            log.debug("send negotiate-ack failed conn={}: {}", ctx.connectionId(), e.getMessage());
+        }
+    }
+
     private void handleLogin(ConnectionContext ctx, Frame frame) {
         GatewaySession session = ctx.session();
+        if (!session.negotiationSettled()) {
+            throw new GatewayException(GatewayErrorCode.NEGOTIATION_REQUIRED,
+                    "LOGIN before capability negotiation");
+        }
         if (session.authenticated()) {
             throw new GatewayException(GatewayErrorCode.ALREADY_AUTHENTICATED,
                     "connection already authenticated as " + session.deviceId());
@@ -119,6 +203,21 @@ public final class FrameDispatcher {
 
     private void handleData(ConnectionContext ctx, Frame frame) {
         GatewaySession session = requireAuth(ctx, frame);
+        // 能力硬约束：DATA FLAGS 上只允许出现本会话谈定的能力位；任何越界扩展位单帧拒绝，连接保留
+        int allowed = session.allowedDataFlags() & 0xFF;
+        int used = frame.flags() & 0xFF;
+        if ((used & ~allowed) != 0) {
+            int offending = used & ~allowed;
+            metrics.error(GatewayErrorCode.CAPABILITY_VIOLATION.code());
+            log.warn("capability violation device={} conn={} seq={} flags=0x{} agreedCaps={} -> single frame rejected",
+                    session.deviceId(), ctx.connectionId(), frame.seq(),
+                    Integer.toHexString(used), session.capabilities().stream().map(Enum::name).toList());
+            sendError(ctx, GatewayErrorCode.CAPABILITY_VIOLATION,
+                    "DATA flags 0x" + Integer.toHexString(offending)
+                            + " not negotiated for this session (allowed=0x" + Integer.toHexString(allowed) + ")",
+                    frame.seq());
+            return;
+        }
         DeviceState state = states.get(session.deviceId());
         ApplyOutcome outcome = state.submit(frame.seq(), frame.payload());
         switch (outcome) {
@@ -177,6 +276,10 @@ public final class FrameDispatcher {
 
     private GatewaySession requireAuth(ConnectionContext ctx, Frame frame) {
         GatewaySession session = ctx.session();
+        if (!session.negotiationSettled()) {
+            throw new GatewayException(GatewayErrorCode.NEGOTIATION_REQUIRED,
+                    frame.type() + " before capability negotiation");
+        }
         if (!session.authenticated()) {
             throw new GatewayException(GatewayErrorCode.NOT_AUTHENTICATED,
                     frame.type() + " before LOGIN");

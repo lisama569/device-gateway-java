@@ -7,6 +7,8 @@ import com.github.lisama569.devicegatewayjava.config.GatewayProperties;
 import com.github.lisama569.devicegatewayjava.dispatch.DownlinkService;
 import com.github.lisama569.devicegatewayjava.dispatch.FrameDispatcher;
 import com.github.lisama569.devicegatewayjava.metrics.GatewayMetrics;
+import com.github.lisama569.devicegatewayjava.negotiation.Negotiator;
+import com.github.lisama569.devicegatewayjava.protocol.FrameConstants;
 import com.github.lisama569.devicegatewayjava.reliability.ReliableDownlink;
 import com.github.lisama569.devicegatewayjava.reliability.TaskScheduler;
 import com.github.lisama569.devicegatewayjava.session.SessionRegistry;
@@ -30,6 +32,8 @@ public final class GatewayTestHarness implements AutoCloseable {
     public final ReliableDownlink reliable;
     public final DownlinkService downlink;
     public final GatewayServer server;
+    public final Negotiator negotiator =
+            new Negotiator(FrameConstants.PROTOCOL_VERSION, FrameConstants.PROTOCOL_VERSION);
 
     private final GatewayProperties props;
 
@@ -41,10 +45,11 @@ public final class GatewayTestHarness implements AutoCloseable {
     public GatewayTestHarness(GatewayProperties props, TaskScheduler scheduler, Clock clock) {
         this.props = props;
         this.scheduler = scheduler;
+        this.metrics.setReceiveResidualLimitBytes(props.getMaxReceiveResidualBytes());
         Authenticator authenticator = new Authenticator(credentials, clock);
         this.states = new DeviceStateStore(props.getSeqWindow());
         this.reliable = new ReliableDownlink(scheduler, props.getMaxRetries(), props.getAckTimeoutMs());
-        FrameDispatcher dispatcher = new FrameDispatcher(authenticator, sessions, states, metrics);
+        FrameDispatcher dispatcher = new FrameDispatcher(authenticator, sessions, states, metrics, negotiator);
         this.downlink = new DownlinkService(sessions, connections, reliable, metrics);
         this.server = new GatewayServer(props, dispatcher, reliable, sessions, connections, metrics);
         registerDefaults();
@@ -63,6 +68,7 @@ public final class GatewayTestHarness implements AutoCloseable {
         p.setPort(0);
         p.setMaxConnections(64);
         p.setMaxFrameLength(512);
+        p.setMaxReceiveResidualBytes(1024);
         p.setMaxOutboundPerSession(16);
         p.setAckTimeoutMs(1000);
         p.setMaxRetries(2);

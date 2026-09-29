@@ -62,7 +62,9 @@ class AuthTest {
             int t1 = FrameAsserts.readFrameType(c);
             assertEquals(MessageType.ACK.code(), t1, "first login acked");
 
-            c.login("device-001", "secret-001", 2);
+            // 第二次直接发 LOGIN（不再发 NEGOTIATE），测的是认证层“同连接重复登录”
+            c.sendRaw(LoopbackClient.frame(MessageType.LOGIN, 0, 2,
+                    LoopbackClient.loginPayload("device-001", "secret-001")));
             ErrorFrames.Parsed err = FrameAsserts.readErrorFrame(c);
             log.info("[重复登录-同连接] seq=2 -> code={} reason='{}'", err.code(), err.reason());
             assertEquals(GatewayErrorCode.ALREADY_AUTHENTICATED.code(), err.code());
@@ -94,11 +96,11 @@ class AuthTest {
     @Test
     void rejectedSessionCannotWriteBusinessState() {
         try (GatewayTestHarness h = new GatewayTestHarness(); LoopbackClient c = h.newClient()) {
-            // 未登录直接发 DATA -> NOT_AUTHENTICATED
+            // 未协商直接发 DATA -> NEGOTIATION_REQUIRED（连接保留，可回头再协商）
             c.sendRaw(LoopbackClient.frame(MessageType.DATA, 0, 1, "hello".getBytes()));
             ErrorFrames.Parsed err = FrameAsserts.readErrorFrame(c);
-            log.info("[未认证DATA] -> code={} reason='{}'", err.code(), err.reason());
-            assertEquals(GatewayErrorCode.NOT_AUTHENTICATED.code(), err.code());
+            log.info("[未协商DATA] -> code={} reason='{}'", err.code(), err.reason());
+            assertEquals(GatewayErrorCode.NEGOTIATION_REQUIRED.code(), err.code());
 
             // 认证失败后再发 DATA，仍是 NOT_AUTHENTICATED，业务状态为零
             c.login("device-001", "bad", 2);

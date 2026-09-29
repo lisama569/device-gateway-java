@@ -7,6 +7,8 @@ import com.github.lisama569.devicegatewayjava.auth.InMemoryCredentialStore;
 import com.github.lisama569.devicegatewayjava.dispatch.DownlinkService;
 import com.github.lisama569.devicegatewayjava.dispatch.FrameDispatcher;
 import com.github.lisama569.devicegatewayjava.metrics.GatewayMetrics;
+import com.github.lisama569.devicegatewayjava.negotiation.Negotiator;
+import com.github.lisama569.devicegatewayjava.protocol.FrameConstants;
 import com.github.lisama569.devicegatewayjava.reliability.ReliableDownlink;
 import com.github.lisama569.devicegatewayjava.reliability.SimpleTaskScheduler;
 import com.github.lisama569.devicegatewayjava.reliability.TaskScheduler;
@@ -46,8 +48,16 @@ public class GatewayConfig {
     }
 
     @Bean
-    public GatewayMetrics gatewayMetrics() {
-        return new GatewayMetrics();
+    public GatewayMetrics gatewayMetrics(GatewayProperties props) {
+        GatewayMetrics metrics = new GatewayMetrics();
+        metrics.setReceiveResidualLimitBytes(props.getMaxReceiveResidualBytes());
+        return metrics;
+    }
+
+    /** 网关自身支持的协议版本范围：当前仅 1（线格式恒为 v1，协商决定会话版本）。 */
+    @Bean
+    public Negotiator negotiator() {
+        return new Negotiator(FrameConstants.PROTOCOL_VERSION, FrameConstants.PROTOCOL_VERSION);
     }
 
     @Bean
@@ -77,8 +87,9 @@ public class GatewayConfig {
 
     @Bean
     public FrameDispatcher frameDispatcher(Authenticator authenticator, SessionRegistry sessions,
-                                           DeviceStateStore states, GatewayMetrics metrics) {
-        return new FrameDispatcher(authenticator, sessions, states, metrics);
+                                           DeviceStateStore states, GatewayMetrics metrics,
+                                           Negotiator negotiator) {
+        return new FrameDispatcher(authenticator, sessions, states, metrics, negotiator);
     }
 
     @Bean

@@ -3,6 +3,7 @@ package com.github.lisama569.devicegatewayjava.transport;
 import com.github.lisama569.devicegatewayjava.error.GatewayErrorCode;
 import com.github.lisama569.devicegatewayjava.metrics.GatewayMetrics;
 import com.github.lisama569.devicegatewayjava.protocol.FrameDecoder;
+import com.github.lisama569.devicegatewayjava.protocol.ErrorFrames;
 import com.github.lisama569.devicegatewayjava.dispatch.FrameDispatcher;
 import com.github.lisama569.devicegatewayjava.reliability.ReliableDownlink;
 import com.github.lisama569.devicegatewayjava.session.GatewaySession;
@@ -71,6 +72,8 @@ public final class ConnectionHandler implements Runnable, ConnectionContext {
                         dispatcher.dispatch(this, ok.frame());
                     } else if (r instanceof FrameDecoder.Result.FrameError err) {
                         dispatcher.dispatchDecodeError(this, err);
+                    } else if (r instanceof FrameDecoder.Result.BufferOverflow over) {
+                        onReceiveBufferOverflow(over);
                     }
                     if (closeRequested || session.closed()) break;
                 }
@@ -82,6 +85,27 @@ public final class ConnectionHandler implements Runnable, ConnectionContext {
         }
     }
 
+    /**
+     * 接收侧按连接容量保护触发：未拼成完整帧的残留超过硬上限。
+     * 结论可区分（4003）、只结束本条连接（terminateAfterDrain 让错误帧先送达），
+     * 日志给出会话标识与判定依据（残留字节数 / 上限）；其他连接不受影响。
+     */
+    private void onReceiveBufferOverflow(FrameDecoder.Result.BufferOverflow over) {
+        metrics.error(GatewayErrorCode.RECEIVE_BUFFER_FULL.code());
+        metrics.receiveBufferTerminated();
+        String basis = "unframed residual " + over.bufferedBytes() + " exceeds per-connection limit "
+                + over.limit();
+        log.warn("receive buffer overflow conn={} device={} basis='{}' -> terminating this connection only",
+                connectionId(), session.deviceId(), basis);
+        try {
+            byte[] err = ErrorFrames.encode(GatewayErrorCode.RECEIVE_BUFFER_FULL, basis, 0);
+            writer.offer(err);
+            metrics.frameOut();
+        } finally {
+            terminateAfterDrain("receive buffer overflow: " + basis);
+        }
+    }
+
     private void cleanup() {
         if (!cleanedUp.compareAndSet(false, true)) return;
         String reason = session.closed() ? session.closeReason() : requestedReason;
@@ -90,13 +114,17 @@ public final class ConnectionHandler implements Runnable, ConnectionContext {
             metrics.sessionInactive();
         }
         reliableDownlink.abortConnection(connectionId());
-        // drainThenClose 时关闭动作已排在写线程队列末尾（保证帧先送达）；否则立即排空关闭
-        if (!drainThenClose) {
+        if (drainThenClose) {
+            // 关 socket 的动作已排到写线程队列末尾（terminateAfterDrain），
+            // 此处若先关会与写线程竞争、截断待排空的结论帧；由写线程在 flush 后执行 session.close
+            log.info("connection closing after drain conn={} device={} reason='{}' bufferedResidual={}",
+                    connectionId(), session.deviceId(), reason, decoder.bufferedBytes());
+        } else {
             writer.close();
+            session.close(reason);
+            log.info("connection closed conn={} device={} reason='{}' bufferedResidual={}",
+                    connectionId(), session.deviceId(), reason, decoder.bufferedBytes());
         }
-        session.close(reason);
-        log.info("connection closed conn={} device={} reason='{}' bufferedResidual={}",
-                connectionId(), session.deviceId(), reason, decoder.bufferedBytes());
     }
 
     @Override

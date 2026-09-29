@@ -110,16 +110,35 @@ class BackpressureTest {
         try (GatewayTestHarness h = new GatewayTestHarness(p, clock,
                 Clock.fixed(Instant.parse("2026-09-01T00:00:00Z"), ZoneOffset.UTC))) {
 
-            // 设备暂停读取 -> 队列很快被填满
-            Socket slow = new Socket("127.0.0.1", h.port());
+            // 设备暂停读取 -> 先协商再登录 -> 队列很快被填满
+            Socket slow = new Socket();
+            slow.connect(new java.net.InetSocketAddress("127.0.0.1", h.port()));
+            slow.setSoTimeout(200); // 排空阶段用短超时兜底，避免极端调度下永久阻塞
+            byte[] negotiate = LoopbackClient.frame(MessageType.NEGOTIATE, 0, 0,
+                    LoopbackClient.negotiatePayload(1, 1, 1, 2));
             byte[] login = LoopbackClient.frame(MessageType.LOGIN, 0, 1,
                     LoopbackClient.loginPayload("device-001", "secret-001"));
+            slow.getOutputStream().write(negotiate);
             slow.getOutputStream().write(login);
             slow.getOutputStream().flush();
-            Thread.sleep(100);
-            // 排空 login ACK（会阻塞读，用小容量只读一次）
+            // 确定性排空：按帧头 MAGIC 计数，直到 NEGOTIATE_ACK + LOGIN ACK 两帧都离开服务端队列
             byte[] drain = new byte[1024];
-            slow.getInputStream().read(drain);
+            int framesSeen = 0;
+            long deadline = System.currentTimeMillis() + 2000;
+            while (framesSeen < 2 && System.currentTimeMillis() < deadline) {
+                int r;
+                try {
+                    r = slow.getInputStream().read(drain);
+                } catch (java.net.SocketTimeoutException timedOut) {
+                    continue;
+                }
+                if (r < 0) break;
+                for (int i = 0; i + 1 < r; i++) {
+                    if ((drain[i] & 0xFF) == 0xA5 && (drain[i + 1] & 0xFF) == 0x5A) framesSeen++;
+                }
+            }
+            org.junit.jupiter.api.Assertions.assertEquals(2, framesSeen, "must drain ack + negotiate-ack");
+            slow.setSoTimeout(0); // 之后设备完全不读（阻塞），让待发队列被下行填满
 
             // 此时不读下行；持续投递直到被降级
             int accepted = 0, degraded = 0;

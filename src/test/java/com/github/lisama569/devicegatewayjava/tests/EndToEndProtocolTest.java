@@ -22,19 +22,23 @@ class EndToEndProtocolTest {
     @Test
     void stickyAndByteByByteFramesOverTcp() {
         try (GatewayTestHarness h = new GatewayTestHarness(); LoopbackClient c = h.newClient()) {
-            // 粘包：LOGIN + DATA1 + DATA2 拼成一个字节串发送（登录用 seq=1000 避免与数据序号冲突）
+            // 粘包：NEGOTIATE + LOGIN + DATA1 + DATA2 拼成一个字节串发送（登录用 seq=1000 避免与数据序号冲突）
+            byte[] neg = LoopbackClient.frame(MessageType.NEGOTIATE, 0, 999,
+                    LoopbackClient.negotiatePayload(1, 1, 1, 2));
             byte[] login = LoopbackClient.frame(MessageType.LOGIN, 0, 1000,
                     LoopbackClient.loginPayload("device-001", "secret-001"));
             byte[] d1 = LoopbackClient.frame(MessageType.DATA, 0, 1, "a".getBytes());
             byte[] d2 = LoopbackClient.frame(MessageType.DATA, 0, 2, "bb".getBytes());
-            byte[] blob = new byte[login.length + d1.length + d2.length];
+            byte[] blob = new byte[neg.length + login.length + d1.length + d2.length];
             int o = 0;
+            System.arraycopy(neg, 0, blob, o, neg.length); o += neg.length;
             System.arraycopy(login, 0, blob, o, login.length); o += login.length;
             System.arraycopy(d1, 0, blob, o, d1.length); o += d1.length;
             System.arraycopy(d2, 0, blob, o, d2.length);
             c.sendRaw(blob);
-            log.info("[E2E粘包] 一次写入 {} 字节(3帧粘连)", blob.length);
+            log.info("[E2E粘包] 一次写入 {} 字节(4帧粘连)", blob.length);
 
+            assertEquals(MessageType.NEGOTIATE_ACK.code(), FrameAsserts.readFrameType(c)); // negotiate
             assertEquals(MessageType.ACK.code(), FrameAsserts.readFrameType(c)); // login
             assertEquals(MessageType.ACK.code(), FrameAsserts.readFrameType(c)); // data1
             assertEquals(MessageType.ACK.code(), FrameAsserts.readFrameType(c)); // data2

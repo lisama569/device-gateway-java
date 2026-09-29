@@ -102,6 +102,8 @@ class ConcurrencyTest {
                     "dev-x", "pass-x", 0L));
             try (LoopbackClient c = h.newClient()) {
                 java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+                bos.write(LoopbackClient.frame(MessageType.NEGOTIATE, 0, 999,
+                        LoopbackClient.negotiatePayload(1, 1, 1, 2)));
                 bos.write(LoopbackClient.frame(MessageType.LOGIN, 0, 1000,
                         LoopbackClient.loginPayload("dev-x", "pass-x")));
                 for (long s = 1; s <= 30; s++) {
@@ -109,7 +111,9 @@ class ConcurrencyTest {
                             ("m" + s).getBytes()));
                 }
                 c.sendRandomChunks(bos.toByteArray(), 42L);
-                for (int i = 0; i <= 30; i++) {
+                assertEquals(MessageType.NEGOTIATE_ACK.code(), FrameAsserts.readFrameType(c),
+                        "response frame 0 (negotiate)");
+                for (int i = 1; i <= 31; i++) {
                     int t = FrameAsserts.readFrameType(c);
                     assertEquals(MessageType.ACK.code(), t, "response frame " + i);
                 }

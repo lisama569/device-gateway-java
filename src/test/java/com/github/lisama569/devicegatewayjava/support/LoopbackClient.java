@@ -104,6 +104,34 @@ public final class LoopbackClient implements AutoCloseable {
 
     // ---- 高层便捷方法 ----
 
+    /** NEGOTIATE 负载：minVer(1) maxVer(1) count(1) capabilityCode*count。 */
+    public static byte[] negotiatePayload(int minVer, int maxVer, int... capCodes) {
+        byte[] p = new byte[3 + capCodes.length];
+        p[0] = (byte) minVer;
+        p[1] = (byte) maxVer;
+        p[2] = (byte) capCodes.length;
+        for (int i = 0; i < capCodes.length; i++) {
+            p[3 + i] = (byte) capCodes[i];
+        }
+        return p;
+    }
+
+    /** 只发一帧 NEGOTIATE（调用方自行读回 NEGOTIATE_ACK / ERROR）。 */
+    public void sendNegotiate(long seq, int minVer, int maxVer, int... capCodes) {
+        sendRaw(frame(MessageType.NEGOTIATE, 0, seq, negotiatePayload(minVer, maxVer, capCodes)));
+    }
+
+    /** 发 NEGOTIATE 并读回 NEGOTIATE_ACK，返回其 (seq,payload)。 */
+    public FrameAsserts.RawFrame negotiateExpectAck(long seq, int minVer, int maxVer, int... capCodes) {
+        sendNegotiate(seq, minVer, maxVer, capCodes);
+        FrameAsserts.RawFrame f = FrameAsserts.readFrame(this);
+        if (f.type() != MessageType.NEGOTIATE_ACK.code()) {
+            throw new IllegalStateException("expected NEGOTIATE_ACK(0x04) but got type=0x"
+                    + Integer.toHexString(f.type()));
+        }
+        return f;
+    }
+
     public static byte[] loginPayload(String deviceId, String secret) {
         byte[] id = deviceId.getBytes(StandardCharsets.UTF_8);
         byte[] sec = secret.getBytes(StandardCharsets.UTF_8);
@@ -122,7 +150,9 @@ public final class LoopbackClient implements AutoCloseable {
         return FrameCodec.encode(new Frame((byte) 1, type, (byte) flags, seq, payload));
     }
 
-    public void login(String deviceId, String secret, long seq) {
-        sendRaw(frame(MessageType.LOGIN, 0, seq, loginPayload(deviceId, secret)));
+    /** 标准上线：先协商（版本 1、能力 COMPRESSION+BATCH），读 NEGOTIATE_ACK，再发 LOGIN（ACK 由调用方读）。 */
+    public void login(String deviceId, String secret, long loginSeq) {
+        negotiateExpectAck(loginSeq - 1, 1, 1, 1, 2);
+        sendRaw(frame(MessageType.LOGIN, 0, loginSeq, loginPayload(deviceId, secret)));
     }
 }

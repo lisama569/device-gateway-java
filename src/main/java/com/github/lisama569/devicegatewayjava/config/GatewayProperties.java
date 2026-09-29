@@ -9,6 +9,8 @@ public class GatewayProperties {
     private int port = 19000;
     private int maxConnections = 64;
     private int maxFrameLength = 8192;
+    /** 按连接的接收侧残留硬上限（未拼成完整帧的字节累计），独立于单帧长度。 */
+    private int maxReceiveResidualBytes = 8192;
     private int maxOutboundPerSession = 256;
     private long ackTimeoutMs = 3000;
     private int maxRetries = 3;
@@ -24,6 +26,8 @@ public class GatewayProperties {
     public void setMaxConnections(int v) { this.maxConnections = v; }
     public int getMaxFrameLength() { return maxFrameLength; }
     public void setMaxFrameLength(int v) { this.maxFrameLength = v; }
+    public int getMaxReceiveResidualBytes() { return maxReceiveResidualBytes; }
+    public void setMaxReceiveResidualBytes(int v) { this.maxReceiveResidualBytes = v; }
     public int getMaxOutboundPerSession() { return maxOutboundPerSession; }
     public void setMaxOutboundPerSession(int v) { this.maxOutboundPerSession = v; }
     public long getAckTimeoutMs() { return ackTimeoutMs; }
