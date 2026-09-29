@@ -16,6 +16,9 @@ public final class GatewayMetrics {
     private final LongAdder connectionsRejected = new LongAdder();
     private final AtomicLong sessionsTerminatedByRetry = new AtomicLong();
     private final AtomicLong activeSessions = new AtomicLong();
+    private final LongAdder receiveBufferOverflows = new LongAdder();
+    private final LongAdder negotiationsSucceeded = new LongAdder();
+    private final LongAdder negotiationsFailed = new LongAdder();
 
     public void sessionActive() { activeSessions.incrementAndGet(); }
     public void sessionInactive() { activeSessions.updateAndGet(v -> Math.max(0, v - 1)); }
@@ -25,6 +28,13 @@ public final class GatewayMetrics {
     public void connectionAccepted() { connectionsAccepted.increment(); }
     public void connectionRejected() { connectionsRejected.increment(); }
     public void retryExhausted() { sessionsTerminatedByRetry.incrementAndGet(); }
+    public void receiveBufferOverflow() { receiveBufferOverflows.increment(); }
+    public void negotiationSucceeded() { negotiationsSucceeded.increment(); }
+    public void negotiationFailed() { negotiationsFailed.increment(); }
+
+    public long receiveBufferOverflows() { return receiveBufferOverflows.sum(); }
+    public long negotiationsSucceeded() { return negotiationsSucceeded.sum(); }
+    public long negotiationsFailed() { return negotiationsFailed.sum(); }
 
     public void error(int code) {
         errors.computeIfAbsent(code, k -> new LongAdder()).increment();
@@ -42,6 +52,9 @@ public final class GatewayMetrics {
         m.put("connectionsAccepted", connectionsAccepted.sum());
         m.put("connectionsRejected", connectionsRejected.sum());
         m.put("sessionsTerminatedByRetry", sessionsTerminatedByRetry.get());
+        m.put("receiveBufferOverflows", receiveBufferOverflows.sum());
+        m.put("negotiationsSucceeded", negotiationsSucceeded.sum());
+        m.put("negotiationsFailed", negotiationsFailed.sum());
         m.put("activeSessions", (long) activeSessions.get());
         for (Map.Entry<Integer, LongAdder> e : errors.entrySet()) {
             m.put("error[" + e.getKey() + "]", e.getValue().sum());

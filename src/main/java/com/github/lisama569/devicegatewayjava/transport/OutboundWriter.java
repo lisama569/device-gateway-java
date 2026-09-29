@@ -93,6 +93,15 @@ public final class OutboundWriter {
         shutdown();
     }
 
+    /** 等待写线程把已入队动作（含 closeAfterDrain 的收尾回调）执行完；超时或中断则返回。 */
+    public void awaitTerminationQuietly(long ms) {
+        try {
+            executor.awaitTermination(ms, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private void shutdown() {
         if (closed) return;
         closed = true;

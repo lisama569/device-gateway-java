@@ -71,6 +71,9 @@ public final class ConnectionHandler implements Runnable, ConnectionContext {
                         dispatcher.dispatch(this, ok.frame());
                     } else if (r instanceof FrameDecoder.Result.FrameError err) {
                         dispatcher.dispatchDecodeError(this, err);
+                    } else if (r instanceof FrameDecoder.Result.BufferExceeded ex) {
+                        // 半包残留超过每连接接收上限：发资源耗尽结论并结束本连接，其他连接不受影响
+                        dispatcher.dispatchBufferExceeded(this, ex);
                     }
                     if (closeRequested || session.closed()) break;
                 }
@@ -90,9 +93,12 @@ public final class ConnectionHandler implements Runnable, ConnectionContext {
             metrics.sessionInactive();
         }
         reliableDownlink.abortConnection(connectionId());
-        // drainThenClose 时关闭动作已排在写线程队列末尾（保证帧先送达）；否则立即排空关闭
+        // drainThenClose 时“关 socket”已排在写线程队列末尾：先等写线程把已入队帧排空并执行收尾，
+        // 再由 session.close 兜底（幂等）；否则立即排空关闭
         if (!drainThenClose) {
             writer.close();
+        } else {
+            writer.awaitTerminationQuietly(2000);
         }
         session.close(reason);
         log.info("connection closed conn={} device={} reason='{}' bufferedResidual={}",

@@ -15,4 +15,6 @@ public final class FrameConstants {
 
     /** 标志位：下行消息需要设备确认 */
     public static final byte FLAG_RELIABLE = 0x01;
+    /** 标志位：优先投递（属于可协商能力 priority，未协商不得使用） */
+    public static final byte FLAG_PRIORITY = 0x02;
 }

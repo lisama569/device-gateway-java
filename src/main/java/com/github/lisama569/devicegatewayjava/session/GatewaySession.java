@@ -1,17 +1,21 @@
 package com.github.lisama569.devicegatewayjava.session;
 
+import com.github.lisama569.devicegatewayjava.negotiation.NegotiatedProfile;
+
 import java.io.IOException;
 import java.net.Socket;
 
 /**
- * 一条 TCP 连接对应的会话：CONNECTED -> AUTHENTICATED -> CLOSED。
+ * 一条 TCP 连接对应的会话：CONNECTED -> (NEGOTIATED) -> AUTHENTICATED -> CLOSED。
  * 被拒绝的登录保持 CONNECTED，dispatcher 保证其无法读写业务状态。
+ * 协商结果一旦写入不可更改（版本与能力集合是会话期硬约束）。
  */
 public final class GatewaySession {
 
     private final String connectionId;
     private final Socket socket;
     private volatile String deviceId;
+    private volatile NegotiatedProfile negotiatedProfile;
     private volatile boolean closed;
     private volatile String closeReason = "";
 
@@ -24,6 +28,19 @@ public final class GatewaySession {
     public Socket socket() { return socket; }
     public String deviceId() { return deviceId; }
     public boolean authenticated() { return deviceId != null; }
+    public boolean negotiated() { return negotiatedProfile != null; }
+    public NegotiatedProfile negotiatedProfile() { return negotiatedProfile; }
+
+    /** 仅允许在认证前写入一次；重复协商或认证后协商由调用方在更早处拒绝。 */
+    public void markNegotiated(NegotiatedProfile profile) {
+        if (this.deviceId != null) {
+            throw new IllegalStateException("session already authenticated, negotiation closed");
+        }
+        if (this.negotiatedProfile != null) {
+            throw new IllegalStateException("session already negotiated");
+        }
+        this.negotiatedProfile = profile;
+    }
     public boolean closed() { return closed; }
     public String closeReason() { return closeReason; }
 

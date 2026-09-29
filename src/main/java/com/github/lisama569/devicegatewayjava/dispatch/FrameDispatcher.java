@@ -4,8 +4,13 @@ import com.github.lisama569.devicegatewayjava.error.GatewayErrorCode;
 import com.github.lisama569.devicegatewayjava.error.GatewayException;
 import com.github.lisama569.devicegatewayjava.auth.Authenticator;
 import com.github.lisama569.devicegatewayjava.metrics.GatewayMetrics;
+import com.github.lisama569.devicegatewayjava.negotiation.Capability;
+import com.github.lisama569.devicegatewayjava.negotiation.CapabilityNegotiator;
+import com.github.lisama569.devicegatewayjava.negotiation.HelloPayload;
+import com.github.lisama569.devicegatewayjava.negotiation.NegotiatedProfile;
 import com.github.lisama569.devicegatewayjava.protocol.ErrorFrames;
 import com.github.lisama569.devicegatewayjava.protocol.Frame;
+import com.github.lisama569.devicegatewayjava.protocol.FrameConstants;
 import com.github.lisama569.devicegatewayjava.protocol.FrameDecoder;
 import com.github.lisama569.devicegatewayjava.protocol.FrameCodec;
 import com.github.lisama569.devicegatewayjava.protocol.MessageType;
@@ -21,7 +26,10 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 将已解析帧分发到认证/会话/状态/可靠投递子系统。
@@ -38,13 +46,28 @@ public final class FrameDispatcher {
     private final SessionRegistry sessions;
     private final DeviceStateStore states;
     private final GatewayMetrics metrics;
+    private final CapabilityNegotiator negotiator;
 
     public FrameDispatcher(Authenticator authenticator, SessionRegistry sessions,
-                           DeviceStateStore states, GatewayMetrics metrics) {
+                           DeviceStateStore states, GatewayMetrics metrics,
+                           CapabilityNegotiator negotiator) {
         this.authenticator = authenticator;
         this.sessions = sessions;
         this.states = states;
         this.metrics = metrics;
+        this.negotiator = negotiator;
+    }
+
+    /** 接收残留超限 -> 资源耗尽错误帧 + 计数，随后排空并关闭该连接（不影响其他连接）。 */
+    public void dispatchBufferExceeded(ConnectionContext ctx, FrameDecoder.Result.BufferExceeded ex) {
+        metrics.error(GatewayErrorCode.RECEIVE_BUFFER_FULL.code());
+        metrics.receiveBufferOverflow();
+        log.warn("receive buffer limit exceeded conn={} device={} buffered={} limit={} -> connection terminated",
+                ctx.connectionId(), ctx.session().deviceId(), ex.bufferedBytes(), ex.limit());
+        sendError(ctx, GatewayErrorCode.RECEIVE_BUFFER_FULL,
+                "incomplete-frame residual " + ex.bufferedBytes()
+                        + " bytes exceeds per-connection limit " + ex.limit(), 0);
+        ctx.terminateAfterDrain(GatewayErrorCode.RECEIVE_BUFFER_FULL.description());
     }
 
     /** 解码层错误 -> 错误帧 + 计数；连接保持。 */
@@ -62,12 +85,14 @@ public final class FrameDispatcher {
                 ctx.connectionId(), session.deviceId(), frame.type(), frame.seq(),
                 frame.payload() == null ? 0 : frame.payload().length);
         try {
+            enforceNegotiatedConstraints(ctx, frame);
             switch (frame.type()) {
+                case HELLO -> handleHello(ctx, frame);
                 case LOGIN -> handleLogin(ctx, frame);
                 case LOGOUT -> handleLogout(ctx, frame);
                 case DATA -> handleData(ctx, frame);
                 case ACK -> handleAck(ctx, frame);
-                case DOWNLINK, ERROR -> sendError(ctx, GatewayErrorCode.MALFORMED_PAYLOAD,
+                case DOWNLINK, ERROR, HELLO_ACK -> sendError(ctx, GatewayErrorCode.MALFORMED_PAYLOAD,
                         frame.type() + " is not accepted from device", frame.seq());
             }
         } catch (GatewayException e) {
@@ -76,6 +101,89 @@ public final class FrameDispatcher {
                     ctx.connectionId(), session.deviceId(), frame.seq(),
                     e.errorCode().code(), e.getMessage());
             sendError(ctx, e.errorCode(), e.getMessage(), frame.seq());
+        }
+    }
+
+    /**
+     * 连接建立阶段的能力协商：仅在未协商且未认证时允许。
+     * 谈成 -> HELLO_ACK 并锁定会话约束；谈不成 -> 明确错误帧后排空关闭，绝不按默认版本硬套。
+     */
+    private void handleHello(ConnectionContext ctx, Frame frame) {
+        GatewaySession session = ctx.session();
+        if (session.authenticated()) {
+            throw new GatewayException(GatewayErrorCode.NEGOTIATION_NOT_ALLOWED,
+                    "session already authenticated as " + session.deviceId()
+                            + ", negotiation is only allowed at connection start");
+        }
+        if (session.negotiated()) {
+            throw new GatewayException(GatewayErrorCode.NEGOTIATION_NOT_ALLOWED,
+                    "capabilities already negotiated for this session, re-negotiation rejected");
+        }
+        HelloPayload.Hello hello = HelloPayload.parseHello(frame.payload());
+        if (hello == null) {
+            throw new GatewayException(GatewayErrorCode.MALFORMED_PAYLOAD,
+                    "malformed HELLO payload");
+        }
+        CapabilityNegotiator.Result result = negotiator.negotiate(hello);
+        if (result instanceof CapabilityNegotiator.Result.Ok ok) {
+            session.markNegotiated(ok.profile());
+            metrics.negotiationSucceeded();
+            log.info("negotiation ok conn={} version={} capabilities={}",
+                    ctx.connectionId(), ok.profile().version(), ok.profile().capabilities());
+            byte[] payload = HelloPayload.encodeHelloAck(ok.profile().version(),
+                    List.copyOf(ok.profile().capabilities()));
+            byte[] raw = FrameCodec.encode(MessageType.HELLO_ACK, (byte) 0, frame.seq(), payload);
+            try {
+                ctx.writeFrame(raw);
+                metrics.frameOut();
+            } catch (IOException e) {
+                log.debug("send hello-ack failed conn={}: {}", ctx.connectionId(), e.getMessage());
+            }
+        } else if (result instanceof CapabilityNegotiator.Result.VersionIncompatible v) {
+            metrics.negotiationFailed();
+            log.warn("negotiation failed conn={} deviceRange={}..{} gatewayRange={}..{} -> connection terminated",
+                    ctx.connectionId(), v.deviceMin(), v.deviceMax(),
+                    v.gatewayMin(), v.gatewayMax());
+            sendError(ctx, GatewayErrorCode.NEGOTIATION_VERSION_INCOMPATIBLE,
+                    "device range " + v.deviceMin() + ".." + v.deviceMax()
+                            + " has no overlap with gateway range "
+                            + v.gatewayMin() + ".." + v.gatewayMax(), frame.seq());
+            ctx.terminateAfterDrain(GatewayErrorCode.NEGOTIATION_VERSION_INCOMPATIBLE.description());
+        } else if (result instanceof CapabilityNegotiator.Result.UnsupportedCapabilities u) {
+            metrics.negotiationFailed();
+            log.warn("negotiation failed conn={} unsupportedCapabilities={} -> connection terminated",
+                    ctx.connectionId(), u.unsupported());
+            sendError(ctx, GatewayErrorCode.NEGOTIATION_CAPABILITY_UNSUPPORTED,
+                    "unsupported capabilities: " + String.join(",", u.unsupported()), frame.seq());
+            ctx.terminateAfterDrain(GatewayErrorCode.NEGOTIATION_CAPABILITY_UNSUPPORTED.description());
+        }
+    }
+
+    /**
+     * 协商结果硬约束：帧版本须等于会话版本；帧用到的能力/扩展字段须已协商。
+     * 未协商的会话按默认约束（版本 1、空能力集）。违规只拒绝当前帧，连接保持。
+     */
+    private void enforceNegotiatedConstraints(ConnectionContext ctx, Frame frame) {
+        if (frame.type() == MessageType.HELLO) return; // 协商帧本身不受约束
+        GatewaySession session = ctx.session();
+        NegotiatedProfile profile = session.negotiatedProfile();
+        int expectedVersion = profile != null ? profile.version() : FrameConstants.PROTOCOL_VERSION;
+        if ((frame.version() & 0xFF) != expectedVersion) {
+            throw new GatewayException(GatewayErrorCode.VERSION_MISMATCH,
+                    "frame version " + (frame.version() & 0xFF)
+                            + " != session negotiated version " + expectedVersion);
+        }
+        Set<String> granted = profile != null ? profile.capabilities() : Set.of();
+        Set<Capability> required = Capability.requiredBy(frame);
+        List<String> missing = required.stream()
+                .map(Capability::wireName)
+                .filter(c -> !granted.contains(c))
+                .toList();
+        if (!missing.isEmpty()) {
+            throw new GatewayException(GatewayErrorCode.CAPABILITY_NOT_NEGOTIATED,
+                    "frame uses capabilities not negotiated for this session: "
+                            + missing.stream().collect(Collectors.joining(","))
+                            + " (granted=" + granted + ")");
         }
     }
 

@@ -18,7 +18,7 @@ public final class FrameCodec {
         out[2] = frame.version();
         out[3] = frame.type().code();
         out[4] = frame.flags();
-        out[5] = 0;
+        out[5] = frame.reserved();
         long seq = frame.seq() & 0xFFFFFFFFL;
         out[6] = (byte) (seq >>> 24);
         out[7] = (byte) (seq >>> 16);
@@ -39,5 +39,9 @@ public final class FrameCodec {
 
     public static byte[] encode(MessageType type, byte flags, long seq, byte[] payload) {
         return encode(new Frame(FrameConstants.PROTOCOL_VERSION, type, flags, seq, payload));
+    }
+
+    public static byte[] encode(MessageType type, byte flags, byte reserved, long seq, byte[] payload) {
+        return encode(new Frame(FrameConstants.PROTOCOL_VERSION, type, flags, reserved, seq, payload));
     }
 }

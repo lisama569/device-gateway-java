@@ -21,19 +21,36 @@ public final class FrameDecoder {
     public sealed interface Result {
         record FrameOk(Frame frame) implements Result {}
         record FrameError(GatewayErrorCode code, String reason, long discardedBytes) implements Result {}
+        /** 未拼成完整帧的残留字节超过每连接接收上限（与单帧长度上限相互独立）。 */
+        record BufferExceeded(long bufferedBytes, long limit) implements Result {}
         record NeedMoreData() implements Result {}
     }
 
     private final int maxPayloadLength;
+    private final long maxBufferedBytes;
     private byte[] buf = new byte[256];
     private int size;
+    private boolean overflowed;
 
     public FrameDecoder(int maxPayloadLength) {
+        this(maxPayloadLength, Long.MAX_VALUE);
+    }
+
+    /**
+     * @param maxPayloadLength 单帧 payload 上限
+     * @param maxBufferedBytes 每连接接收残留硬上限（半包占用内存的确定上界）
+     */
+    public FrameDecoder(int maxPayloadLength, long maxBufferedBytes) {
         this.maxPayloadLength = maxPayloadLength;
+        this.maxBufferedBytes = maxBufferedBytes;
     }
 
     /** 喂入一段字节，返回本次可确定的全部结论（按流顺序）；无完整帧时末尾给 NeedMoreData。 */
     public List<Result> feed(byte[] chunk, int offset, int length) {
+        if (overflowed) {
+            // 已判定超限：连接随即被关闭，不再累积任何字节
+            return List.of(new Result.BufferExceeded(size, maxBufferedBytes));
+        }
         append(chunk, offset, length);
         List<Result> results = new ArrayList<>();
         while (true) {
@@ -83,6 +100,7 @@ public final class FrameDecoder {
             byte version = buf[2];
             byte typeCode = buf[3];
             byte flags = buf[4];
+            byte reserved = buf[5];
             long seq = unsignedIntAt(6);
 
             if (version != FrameConstants.PROTOCOL_VERSION) {
@@ -105,7 +123,16 @@ public final class FrameDecoder {
 
             byte[] payload = Arrays.copyOfRange(buf, FrameConstants.HEADER_LEN, crcOffset);
             discardPrefix(frameLen);
-            results.add(new Result.FrameOk(new Frame(version, typeOpt.get(), flags, seq, payload)));
+            results.add(new Result.FrameOk(new Frame(version, typeOpt.get(), flags, reserved, seq, payload)));
+        }
+        // 完整帧消耗完毕后判定：只有“拼不成帧的残留”才计入每连接接收上限
+        if (size > maxBufferedBytes) {
+            overflowed = true;
+            long buffered = size;
+            buf = new byte[256];
+            size = 0;
+            results.add(new Result.BufferExceeded(buffered, maxBufferedBytes));
+            return results;
         }
         if (results.isEmpty()) results.add(new Result.NeedMoreData());
         return results;

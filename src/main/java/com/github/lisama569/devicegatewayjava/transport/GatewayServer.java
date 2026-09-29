@@ -83,9 +83,11 @@ public final class GatewayServer {
         acceptThread = new Thread(this::acceptLoop, "gw-accept");
         acceptThread.setDaemon(true);
         acceptThread.start();
-        log.info("gateway listening on 127.0.0.1:{} maxConnections={} maxFrameBytes={} maxOutbound={}",
+        log.info("gateway listening on 127.0.0.1:{} maxConnections={} maxFrameBytes={} maxReceiveBufferBytes={} maxOutbound={} versions={}..{} capabilities={}",
                 serverSocket.getLocalPort(), props.getMaxConnections(),
-                props.getMaxFrameLength(), props.getMaxOutboundPerSession());
+                props.getMaxFrameLength(), props.getMaxReceiveBufferBytes(),
+                props.getMaxOutboundPerSession(), props.getProtocolMinVersion(),
+                props.getProtocolMaxVersion(), props.getSupportedCapabilities());
     }
 
     public boolean isRunning() { return running; }
@@ -115,7 +117,8 @@ public final class GatewayServer {
                     continue;
                 }
                 ConnectionHandler handler = new ConnectionHandler(session,
-                        new FrameDecoder(props.getMaxFrameLength()), dispatcher, reliable,
+                        new FrameDecoder(props.getMaxFrameLength(), props.getMaxReceiveBufferBytes()),
+                        dispatcher, reliable,
                         registry, writer, metrics, props.getMaxFrameLength());
                 connections.register(handler);
                 workers.execute(() -> {

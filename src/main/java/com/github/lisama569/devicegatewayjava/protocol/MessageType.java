@@ -6,6 +6,8 @@ import java.util.Optional;
 public enum MessageType {
     LOGIN((byte) 0x01, true),
     LOGOUT((byte) 0x02, true),
+    HELLO((byte) 0x03, true),
+    HELLO_ACK((byte) 0x04, false),
     DATA((byte) 0x10, true),
     DOWNLINK((byte) 0x20, false),
     ACK((byte) 0x21, true),

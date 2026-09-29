@@ -7,6 +7,7 @@ import com.github.lisama569.devicegatewayjava.config.GatewayProperties;
 import com.github.lisama569.devicegatewayjava.dispatch.DownlinkService;
 import com.github.lisama569.devicegatewayjava.dispatch.FrameDispatcher;
 import com.github.lisama569.devicegatewayjava.metrics.GatewayMetrics;
+import com.github.lisama569.devicegatewayjava.negotiation.CapabilityNegotiator;
 import com.github.lisama569.devicegatewayjava.reliability.ReliableDownlink;
 import com.github.lisama569.devicegatewayjava.reliability.TaskScheduler;
 import com.github.lisama569.devicegatewayjava.session.SessionRegistry;
@@ -15,6 +16,7 @@ import com.github.lisama569.devicegatewayjava.transport.ConnectionRegistry;
 import com.github.lisama569.devicegatewayjava.transport.GatewayServer;
 
 import java.time.Clock;
+import java.util.Set;
 import java.time.Instant;
 import java.time.ZoneOffset;
 
@@ -44,7 +46,9 @@ public final class GatewayTestHarness implements AutoCloseable {
         Authenticator authenticator = new Authenticator(credentials, clock);
         this.states = new DeviceStateStore(props.getSeqWindow());
         this.reliable = new ReliableDownlink(scheduler, props.getMaxRetries(), props.getAckTimeoutMs());
-        FrameDispatcher dispatcher = new FrameDispatcher(authenticator, sessions, states, metrics);
+        CapabilityNegotiator negotiator = new CapabilityNegotiator(props.getProtocolMinVersion(),
+                props.getProtocolMaxVersion(), Set.copyOf(props.getSupportedCapabilities()));
+        FrameDispatcher dispatcher = new FrameDispatcher(authenticator, sessions, states, metrics, negotiator);
         this.downlink = new DownlinkService(sessions, connections, reliable, metrics);
         this.server = new GatewayServer(props, dispatcher, reliable, sessions, connections, metrics);
         registerDefaults();
@@ -63,6 +67,7 @@ public final class GatewayTestHarness implements AutoCloseable {
         p.setPort(0);
         p.setMaxConnections(64);
         p.setMaxFrameLength(512);
+        p.setMaxReceiveBufferBytes(4096);
         p.setMaxOutboundPerSession(16);
         p.setAckTimeoutMs(1000);
         p.setMaxRetries(2);

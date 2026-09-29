@@ -7,6 +7,7 @@ import com.github.lisama569.devicegatewayjava.auth.InMemoryCredentialStore;
 import com.github.lisama569.devicegatewayjava.dispatch.DownlinkService;
 import com.github.lisama569.devicegatewayjava.dispatch.FrameDispatcher;
 import com.github.lisama569.devicegatewayjava.metrics.GatewayMetrics;
+import com.github.lisama569.devicegatewayjava.negotiation.CapabilityNegotiator;
 import com.github.lisama569.devicegatewayjava.reliability.ReliableDownlink;
 import com.github.lisama569.devicegatewayjava.reliability.SimpleTaskScheduler;
 import com.github.lisama569.devicegatewayjava.reliability.TaskScheduler;
@@ -19,6 +20,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import java.time.Clock;
+import java.util.Set;
 
 /** 网关 Bean 装配（全部本地组件，无外部依赖）。 */
 @Configuration
@@ -76,9 +78,16 @@ public class GatewayConfig {
     }
 
     @Bean
+    public CapabilityNegotiator capabilityNegotiator(GatewayProperties props) {
+        return new CapabilityNegotiator(props.getProtocolMinVersion(), props.getProtocolMaxVersion(),
+                Set.copyOf(props.getSupportedCapabilities()));
+    }
+
+    @Bean
     public FrameDispatcher frameDispatcher(Authenticator authenticator, SessionRegistry sessions,
-                                           DeviceStateStore states, GatewayMetrics metrics) {
-        return new FrameDispatcher(authenticator, sessions, states, metrics);
+                                           DeviceStateStore states, GatewayMetrics metrics,
+                                           CapabilityNegotiator negotiator) {
+        return new FrameDispatcher(authenticator, sessions, states, metrics, negotiator);
     }
 
     @Bean
