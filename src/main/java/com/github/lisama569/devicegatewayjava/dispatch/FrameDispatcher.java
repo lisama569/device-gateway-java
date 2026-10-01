@@ -10,7 +10,6 @@ import com.github.lisama569.devicegatewayjava.negotiation.HelloPayload;
 import com.github.lisama569.devicegatewayjava.negotiation.NegotiatedProfile;
 import com.github.lisama569.devicegatewayjava.protocol.ErrorFrames;
 import com.github.lisama569.devicegatewayjava.protocol.Frame;
-import com.github.lisama569.devicegatewayjava.protocol.FrameConstants;
 import com.github.lisama569.devicegatewayjava.protocol.FrameDecoder;
 import com.github.lisama569.devicegatewayjava.protocol.FrameCodec;
 import com.github.lisama569.devicegatewayjava.protocol.MessageType;
@@ -85,6 +84,9 @@ public final class FrameDispatcher {
                 ctx.connectionId(), session.deviceId(), frame.type(), frame.seq(),
                 frame.payload() == null ? 0 : frame.payload().length);
         try {
+            if (frame.type() != MessageType.HELLO) {
+                enforceNegotiationCompleted(ctx, frame);
+            }
             enforceNegotiatedConstraints(ctx, frame);
             switch (frame.type()) {
                 case HELLO -> handleHello(ctx, frame);
@@ -160,20 +162,41 @@ public final class FrameDispatcher {
     }
 
     /**
-     * 协商结果硬约束：帧版本须等于会话版本；帧用到的能力/扩展字段须已协商。
-     * 未协商的会话按默认约束（版本 1、空能力集）。违规只拒绝当前帧，连接保持。
+     * 协商前置：HELLO 协商成功是进入登录/业务之前必须先过的一关。
+     * 在协商成功之前，除 HELLO 外的任何帧都不按合法设备处理，统一回
+     * NEGOTIATION_REQUIRED(1010)——与 NOT_AUTHENTICATED(2001)（没登录）、
+     * CAPABILITY_NOT_NEGOTIATED(1009)（版本/能力对不上）明确区分；
+     * 绝不隐式套用默认版本/空能力放行。只拒绝当前帧，不改动会话状态，连接保持。
+     */
+    private void enforceNegotiationCompleted(ConnectionContext ctx, Frame frame) {
+        if (!ctx.session().negotiated()) {
+            throw new GatewayException(GatewayErrorCode.NEGOTIATION_REQUIRED,
+                    frame.type() + " rejected: HELLO negotiation has not completed on this connection"
+                            + " (negotiation must succeed exactly once before LOGIN/business frames)");
+        }
+    }
+
+    /**
+     * 协商结果硬约束：帧版本须等于选定版本；帧用到的能力/扩展字段须已协商。
+     * 走到这里的非 HELLO 帧必然已协商成功（enforceNegotiationCompleted 保证）。
+     * 违规只拒绝当前帧，连接保持。
      */
     private void enforceNegotiatedConstraints(ConnectionContext ctx, Frame frame) {
-        if (frame.type() == MessageType.HELLO) return; // 协商帧本身不受约束
+        if (frame.type() == MessageType.HELLO) return; // 协商帧本身不受已协商约束
         GatewaySession session = ctx.session();
         NegotiatedProfile profile = session.negotiatedProfile();
-        int expectedVersion = profile != null ? profile.version() : FrameConstants.PROTOCOL_VERSION;
+        if (profile == null) {
+            // 理论不可达：前置校验已拦截；防御性归类为协商未完成而非默认放行
+            throw new GatewayException(GatewayErrorCode.NEGOTIATION_REQUIRED,
+                    "frame reached constraint enforcement before completed negotiation");
+        }
+        int expectedVersion = profile.version();
         if ((frame.version() & 0xFF) != expectedVersion) {
             throw new GatewayException(GatewayErrorCode.VERSION_MISMATCH,
                     "frame version " + (frame.version() & 0xFF)
                             + " != session negotiated version " + expectedVersion);
         }
-        Set<String> granted = profile != null ? profile.capabilities() : Set.of();
+        Set<String> granted = profile.capabilities();
         Set<Capability> required = Capability.requiredBy(frame);
         List<String> missing = required.stream()
                 .map(Capability::wireName)

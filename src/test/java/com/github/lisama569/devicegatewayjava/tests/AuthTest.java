@@ -20,6 +20,7 @@ class AuthTest {
     private static ErrorFrames.Parsed loginAndExpectError(GatewayTestHarness h,
                                                           String deviceId, String secret, long seq) {
         try (LoopbackClient c = h.newClient()) {
+            c.negotiate(); // 协商前置：先合法过协商，再验证认证结论
             c.login(deviceId, secret, seq);
             ErrorFrames.Parsed err = FrameAsserts.readErrorFrame(c);
             log.info("[认证] deviceId='{}' secret='{}' seq={} -> code={} reason='{}'",
@@ -58,6 +59,7 @@ class AuthTest {
     @Test
     void duplicateLoginSameConnectionRejected() {
         try (GatewayTestHarness h = new GatewayTestHarness(); LoopbackClient c = h.newClient()) {
+            c.negotiate();
             c.login("device-001", "secret-001", 1);
             int t1 = FrameAsserts.readFrameType(c);
             assertEquals(MessageType.ACK.code(), t1, "first login acked");
@@ -74,9 +76,11 @@ class AuthTest {
         try (GatewayTestHarness h = new GatewayTestHarness();
              LoopbackClient c1 = h.newClient();
              LoopbackClient c2 = h.newClient()) {
+            c1.negotiate();
             c1.login("device-001", "secret-001", 1);
             assertEquals(MessageType.ACK.code(), FrameAsserts.readFrameType(c1));
 
+            c2.negotiate();
             c2.login("device-001", "secret-001", 1);
             assertEquals(MessageType.ACK.code(), FrameAsserts.readFrameType(c2));
 
@@ -94,7 +98,8 @@ class AuthTest {
     @Test
     void rejectedSessionCannotWriteBusinessState() {
         try (GatewayTestHarness h = new GatewayTestHarness(); LoopbackClient c = h.newClient()) {
-            // 未登录直接发 DATA -> NOT_AUTHENTICATED
+            c.negotiate();
+            // 已协商但未登录直接发 DATA -> NOT_AUTHENTICATED
             c.sendRaw(LoopbackClient.frame(MessageType.DATA, 0, 1, "hello".getBytes()));
             ErrorFrames.Parsed err = FrameAsserts.readErrorFrame(c);
             log.info("[未认证DATA] -> code={} reason='{}'", err.code(), err.reason());
@@ -102,13 +107,15 @@ class AuthTest {
 
             // 认证失败后再发 DATA，仍是 NOT_AUTHENTICATED，业务状态为零
             c.login("device-001", "bad", 2);
-            FrameAsserts.readErrorFrame(c);
+            ErrorFrames.Parsed loginErr = FrameAsserts.readErrorFrame(c);
+            assertEquals(GatewayErrorCode.CREDENTIAL_INVALID.code(), loginErr.code());
             c.sendRaw(LoopbackClient.frame(MessageType.DATA, 0, 1, "hello2".getBytes()));
             ErrorFrames.Parsed err2 = FrameAsserts.readErrorFrame(c);
             assertEquals(GatewayErrorCode.NOT_AUTHENTICATED.code(), err2.code());
 
             // 用正确凭证登录另一连接，业务计数从 0 开始，证明之前的 DATA 未生效
             try (LoopbackClient ok = h.newClient()) {
+                ok.negotiate();
                 ok.login("device-001", "secret-001", 1);
                 FrameAsserts.readFrameType(ok);
                 ok.sendRaw(LoopbackClient.frame(MessageType.DATA, 0, 1, "first".getBytes()));

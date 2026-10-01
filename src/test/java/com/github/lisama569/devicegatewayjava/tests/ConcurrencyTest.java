@@ -45,7 +45,8 @@ class ConcurrencyTest {
                     try {
                         start.await();
                         try (LoopbackClient c = h.newClient()) {
-                            c.login("dev-" + dev, "pass-" + dev, 1);
+                            c.negotiate(1, 1, java.util.List.of(), 1);
+                            c.login("dev-" + dev, "pass-" + dev, 2);
                             if (FrameAsserts.readFrameType(c) != MessageType.ACK.code()) {
                                 failures.incrementAndGet();
                                 errors.add("dev-" + dev + " login no ack");
@@ -101,6 +102,7 @@ class ConcurrencyTest {
             h.credentials.register(new com.github.lisama569.devicegatewayjava.auth.DeviceCredential(
                     "dev-x", "pass-x", 0L));
             try (LoopbackClient c = h.newClient()) {
+                c.negotiate(1, 1, java.util.List.of(), 1); // 协商前置，先读完 HELLO_ACK
                 java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
                 bos.write(LoopbackClient.frame(MessageType.LOGIN, 0, 1000,
                         LoopbackClient.loginPayload("dev-x", "pass-x")));

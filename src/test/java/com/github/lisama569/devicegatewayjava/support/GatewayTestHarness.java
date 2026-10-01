@@ -69,6 +69,8 @@ public final class GatewayTestHarness implements AutoCloseable {
         p.setMaxFrameLength(512);
         p.setMaxReceiveBufferBytes(4096);
         p.setMaxOutboundPerSession(16);
+        // 小发送缓冲：设备停止读取时写线程快速被 TCP 反压，待发队列上限可确定性触发
+        p.setSocketSendBufferBytes(512);
         p.setAckTimeoutMs(1000);
         p.setMaxRetries(2);
         p.setSeqWindow(8);

@@ -72,7 +72,8 @@ class ReceiveBufferLimitTest {
             assertEquals(1, h.metrics.errorCount(GatewayErrorCode.RECEIVE_BUFFER_FULL.code()));
 
             // 其他连接完全不受影响
-            bystander.login("device-001", "secret-001", 1);
+            bystander.negotiate(1, 1, java.util.List.of(), 1);
+            bystander.login("device-001", "secret-001", 2);
             assertEquals(MessageType.ACK.code() & 0xFF, FrameAsserts.readFrameType(bystander));
             bystander.sendRaw(LoopbackClient.frame(MessageType.DATA, 0, 1, "fine".getBytes()));
             assertEquals(MessageType.ACK.code() & 0xFF, FrameAsserts.readFrameType(bystander));
@@ -83,8 +84,10 @@ class ReceiveBufferLimitTest {
     @Test
     void residualBelowLimitKeepsConnectionAlive() {
         try (GatewayTestHarness h = harnessWithSmallReceiveBuffer(); LoopbackClient c = h.newClient()) {
+            // 先完整协商（协商前置）
+            c.negotiate(1, 1, java.util.List.of(), 1);
             // 登录帧分两片发送，中间残留低于上限 -> 正常拼帧、正常认证
-            byte[] login = LoopbackClient.frame(MessageType.LOGIN, 0, 1,
+            byte[] login = LoopbackClient.frame(MessageType.LOGIN, 0, 2,
                     LoopbackClient.loginPayload("device-001", "secret-001"));
             assertTrue(login.length < 200);
             c.sendRaw(login, 0, 10); // 半包挂起（残留 10 字节 < 200）

@@ -14,6 +14,11 @@ public class GatewayProperties {
     /** 每连接接收残留硬上限（字节）：未拼成完整帧的缓冲不得超过该值，与单帧长度上限独立。 */
     private int maxReceiveBufferBytes = 16384;
     private int maxOutboundPerSession = 256;
+    /**
+     * 每连接 socket 发送缓冲（SO_SNDBUF，字节）；0 表示沿用操作系统默认值。
+     * 主要用于在回环测试中让“设备停止读取”能快速反压写线程，从而确定性触发待发队列上限。
+     */
+    private int socketSendBufferBytes = 0;
     /** 网关支持的协议版本区间（含端点），协商时与设备区间求交。 */
     private int protocolMinVersion = 1;
     private int protocolMaxVersion = 1;
@@ -43,6 +48,8 @@ public class GatewayProperties {
     public void setSupportedCapabilities(List<String> v) { this.supportedCapabilities = v; }
     public int getMaxOutboundPerSession() { return maxOutboundPerSession; }
     public void setMaxOutboundPerSession(int v) { this.maxOutboundPerSession = v; }
+    public int getSocketSendBufferBytes() { return socketSendBufferBytes; }
+    public void setSocketSendBufferBytes(int v) { this.socketSendBufferBytes = v; }
     public long getAckTimeoutMs() { return ackTimeoutMs; }
     public void setAckTimeoutMs(long v) { this.ackTimeoutMs = v; }
     public int getMaxRetries() { return maxRetries; }

@@ -91,6 +91,7 @@ class BackpressureTest {
                     Thread.sleep(10);
                 }
                 try (LoopbackClient c = h.newClient()) {
+                    c.negotiate();
                     c.login("device-001", "secret-001", 1);
                     assertEquals(MessageType.ACK.code(), FrameAsserts.readFrameType(c));
                     log.info("[连接上限] 释放许可后新连接正常登录，服务未中断");
@@ -110,9 +111,33 @@ class BackpressureTest {
         try (GatewayTestHarness h = new GatewayTestHarness(p, clock,
                 Clock.fixed(Instant.parse("2026-09-01T00:00:00Z"), ZoneOffset.UTC))) {
 
-            // 设备暂停读取 -> 队列很快被填满
-            Socket slow = new Socket("127.0.0.1", h.port());
-            byte[] login = LoopbackClient.frame(MessageType.LOGIN, 0, 1,
+            // 设备暂停读取 -> 队列很快被填满。
+            // 连接前把接收窗口调到极小：设备不读时，发送端在数帧后即被 TCP 反压阻塞，
+            // 从而有界待发队列(容量3)必然被填满并降级——避免依赖本机默认大回环缓冲造成用例不稳定。
+            Socket slow = new Socket();
+            slow.setReceiveBufferSize(256);
+            slow.connect(new java.net.InetSocketAddress("127.0.0.1", h.port()), 2000);
+            // 先协商：发 HELLO 并读完 HELLO_ACK（协商前置）
+            byte[] hello = LoopbackClient.frame(MessageType.HELLO, 0, 1,
+                    com.github.lisama569.devicegatewayjava.negotiation.HelloPayload
+                            .encodeHello(1, 1, java.util.List.of()));
+            slow.getOutputStream().write(hello);
+            slow.getOutputStream().flush();
+            byte[] ackHeader = new byte[FrameConstants.HEADER_LEN];
+            int hr = 0;
+            while (hr < ackHeader.length) {
+                int r = slow.getInputStream().read(ackHeader, hr, ackHeader.length - hr);
+                if (r < 0) fail("EOF while expecting HELLO_ACK");
+                hr += r;
+            }
+            assertEquals(MessageType.HELLO_ACK.code() & 0xFF, ackHeader[3], "expected HELLO_ACK");
+            int ackLen = ((ackHeader[10] & 0xFF) << 24) | ((ackHeader[11] & 0xFF) << 16)
+                    | ((ackHeader[12] & 0xFF) << 8) | (ackHeader[13] & 0xFF);
+            byte[] ackRest = new byte[ackLen + 2];
+            int rr = 0;
+            while (rr < ackRest.length) rr += slow.getInputStream().read(ackRest, rr, ackRest.length - rr);
+
+            byte[] login = LoopbackClient.frame(MessageType.LOGIN, 0, 2,
                     LoopbackClient.loginPayload("device-001", "secret-001"));
             slow.getOutputStream().write(login);
             slow.getOutputStream().flush();
@@ -121,10 +146,12 @@ class BackpressureTest {
             byte[] drain = new byte[1024];
             slow.getInputStream().read(drain);
 
-            // 此时不读下行；持续投递直到被降级
+            // 此时不读下行；持续投递大帧直到被降级（极小接收窗口 + 大负载下很快填满）
+            byte[] bigPayload = new byte[400];
+            java.util.Arrays.fill(bigPayload, (byte) 'm');
             int accepted = 0, degraded = 0;
-            for (int i = 0; i < 50; i++) {
-                var r = h.downlink.sendReliable("device-001", ("m" + i).getBytes());
+            for (int i = 0; i < 200; i++) {
+                var r = h.downlink.sendReliable("device-001", bigPayload);
                 if (r.accepted()) accepted++;
                 else { degraded++; }
                 if (!r.accepted() && r.errorCode() == GatewayErrorCode.OUTBOUND_BUFFER_FULL.code()) break;

@@ -1,5 +1,6 @@
 package com.github.lisama569.devicegatewayjava.support;
 
+import com.github.lisama569.devicegatewayjava.negotiation.HelloPayload;
 import com.github.lisama569.devicegatewayjava.protocol.Frame;
 import com.github.lisama569.devicegatewayjava.protocol.FrameCodec;
 import com.github.lisama569.devicegatewayjava.protocol.MessageType;
@@ -10,6 +11,7 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Random;
 
 /** 确定性回环 TCP 客户端：支持任意分片、任意字节写入、按帧读取。 */
@@ -120,6 +122,40 @@ public final class LoopbackClient implements AutoCloseable {
 
     public static byte[] frame(MessageType type, int flags, long seq, byte[] payload) {
         return FrameCodec.encode(new Frame((byte) 1, type, (byte) flags, seq, payload));
+    }
+
+    /** 发一帧 HELLO（指定版本区间与能力集），不读响应。 */
+    public void sendHello(int minVersion, int maxVersion, List<String> capabilities, long seq) {
+        sendRaw(FrameCodec.encode(MessageType.HELLO, (byte) 0, seq,
+                HelloPayload.encodeHello(minVersion, maxVersion, capabilities)));
+    }
+
+    /** 完成一次协商：发 HELLO 并读取、校验 HELLO_ACK，返回解析结果。 */
+    public HelloPayload.HelloAck negotiate(int minVersion, int maxVersion,
+                                           List<String> capabilities, long seq) {
+        sendHello(minVersion, maxVersion, capabilities, seq);
+        FrameAsserts.RawFrame f = FrameAsserts.readFrame(this);
+        if (f.type() != (MessageType.HELLO_ACK.code() & 0xFF)) {
+            throw new IllegalStateException("expected HELLO_ACK but got frame type 0x"
+                    + Integer.toHexString(f.type()));
+        }
+        HelloPayload.HelloAck ack = HelloPayload.parseHelloAck(f.payload());
+        if (ack == null) {
+            throw new IllegalStateException("malformed HELLO_ACK payload");
+        }
+        return ack;
+    }
+
+    /** 用默认参数（版本 1、空能力集、seq=1）完成协商。 */
+    public HelloPayload.HelloAck negotiate() {
+        return negotiate(1, 1, List.of(), 1);
+    }
+
+    /** 协商 + 登录一条龙；loginSeq 为 LOGIN 帧序号。返回登录响应类型（应为 ACK）。 */
+    public int negotiateAndLogin(String deviceId, String secret, long loginSeq) {
+        negotiate();
+        login(deviceId, secret, loginSeq);
+        return FrameAsserts.readFrameType(this);
     }
 
     public void login(String deviceId, String secret, long seq) {

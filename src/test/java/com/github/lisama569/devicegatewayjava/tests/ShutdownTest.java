@@ -26,7 +26,8 @@ class ShutdownTest {
     void committedStateSurvivesAndConnectionsCloseOnShutdown() throws Exception {
         GatewayTestHarness h = new GatewayTestHarness();
         LoopbackClient c = h.newClient();
-        c.login("device-001", "secret-001", 1);
+        c.negotiate(1, 1, java.util.List.of(), 1);
+        c.login("device-001", "secret-001", 2);
         FrameAsserts.readFrameType(c);
 
         for (long s = 1; s <= 5; s++) {

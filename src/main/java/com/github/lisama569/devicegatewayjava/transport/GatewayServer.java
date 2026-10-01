@@ -107,6 +107,13 @@ public final class GatewayServer {
                 metrics.connectionAccepted();
                 String cid = "c" + connSeq.incrementAndGet();
                 GatewaySession session = new GatewaySession(cid, socket);
+                if (props.getSocketSendBufferBytes() > 0) {
+                    try {
+                        socket.setSendBufferSize(props.getSocketSendBufferBytes());
+                    } catch (SocketException e) {
+                        log.debug("set send buffer size failed conn={}: {}", cid, e.getMessage());
+                    }
+                }
                 OutboundWriter writer;
                 try {
                     writer = new OutboundWriter(socket.getOutputStream(),

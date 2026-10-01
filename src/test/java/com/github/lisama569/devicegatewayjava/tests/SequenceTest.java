@@ -19,6 +19,7 @@ class SequenceTest {
 
     private LoopbackClient login(GatewayTestHarness h, String device, String secret) {
         LoopbackClient c = h.newClient();
+        c.negotiate();
         c.login(device, secret, 1);
         assertEquals(MessageType.ACK.code(), FrameAsserts.readFrameType(c));
         return c;

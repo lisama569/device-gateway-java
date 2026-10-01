@@ -28,6 +28,7 @@ class ReliabilityTest {
 
     private LoopbackClient login(GatewayTestHarness h, String device, String secret) {
         LoopbackClient c = h.newClient();
+        c.negotiate();
         c.login(device, secret, 1);
         FrameAsserts.readFrameType(c); // ACK
         return c;
