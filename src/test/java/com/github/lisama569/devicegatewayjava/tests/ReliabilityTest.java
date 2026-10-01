@@ -28,6 +28,7 @@ class ReliabilityTest {
 
     private LoopbackClient login(GatewayTestHarness h, String device, String secret) {
         LoopbackClient c = h.newClient();
+        c.negotiate(1); // 协商是登录前必经步骤
         c.login(device, secret, 1);
         FrameAsserts.readFrameType(c); // ACK
         return c;

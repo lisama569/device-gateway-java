@@ -26,6 +26,7 @@ class ShutdownTest {
     void committedStateSurvivesAndConnectionsCloseOnShutdown() throws Exception {
         GatewayTestHarness h = new GatewayTestHarness();
         LoopbackClient c = h.newClient();
+        c.negotiate(1); // 协商是登录前必经步骤
         c.login("device-001", "secret-001", 1);
         FrameAsserts.readFrameType(c);
 

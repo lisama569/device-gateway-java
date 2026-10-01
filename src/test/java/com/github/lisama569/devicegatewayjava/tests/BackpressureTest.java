@@ -42,6 +42,25 @@ class BackpressureTest {
         GatewayProperties create();
     }
 
+    /** 精确排空 socket 上的一整帧（读满帧头 -> 解析 LENGTH -> 读满 payload+CRC），不多读后续帧。 */
+    private static void drainOneFrame(Socket socket) throws Exception {
+        byte[] header = new byte[FrameConstants.HEADER_LEN];
+        readExactly(socket, header);
+        int len = ((header[10] & 0xFF) << 24) | ((header[11] & 0xFF) << 16)
+                | ((header[12] & 0xFF) << 8) | (header[13] & 0xFF);
+        readExactly(socket, new byte[len + 2]);
+    }
+
+    private static void readExactly(Socket socket, byte[] buf) throws Exception {
+        int n = buf.length;
+        int total = 0;
+        while (total < n) {
+            int r = socket.getInputStream().read(buf, total, n - total);
+            if (r < 0) throw new IllegalStateException("EOF while draining " + n + " bytes");
+            total += r;
+        }
+    }
+
     @Test
     void connectionOverLimitReceivesDistinctErrorAndServerSurvives() throws Exception {
         GatewayProperties p = GatewayTestHarness.defaultProps();
@@ -91,6 +110,7 @@ class BackpressureTest {
                     Thread.sleep(10);
                 }
                 try (LoopbackClient c = h.newClient()) {
+                    c.negotiate(1); // 协商是登录前必经步骤
                     c.login("device-001", "secret-001", 1);
                     assertEquals(MessageType.ACK.code(), FrameAsserts.readFrameType(c));
                     log.info("[连接上限] 释放许可后新连接正常登录，服务未中断");
@@ -110,29 +130,36 @@ class BackpressureTest {
         try (GatewayTestHarness h = new GatewayTestHarness(p, clock,
                 Clock.fixed(Instant.parse("2026-09-01T00:00:00Z"), ZoneOffset.UTC))) {
 
-            // 设备暂停读取 -> 队列很快被填满
-            Socket slow = new Socket("127.0.0.1", h.port());
+            // 设备暂停读取且接收窗口很小 -> 服务端写线程很快阻塞在 flush，待发队列必然堆满
+            Socket slow = new Socket();
+            slow.setReceiveBufferSize(4096); // 必须在 connect 前设置，通告一个很小的接收窗口
+            slow.connect(new java.net.InetSocketAddress("127.0.0.1", h.port()), 2000);
+            // 先完成必经的协商：发 HELLO、按帧精确排空 HELLO_ACK（不多读，避免把登录 ACK 带走）
+            slow.getOutputStream().write(LoopbackClient.helloFrame(1));
+            slow.getOutputStream().flush();
+            Thread.sleep(100);
+            drainOneFrame(slow); // HELLO_ACK
             byte[] login = LoopbackClient.frame(MessageType.LOGIN, 0, 1,
                     LoopbackClient.loginPayload("device-001", "secret-001"));
             slow.getOutputStream().write(login);
             slow.getOutputStream().flush();
             Thread.sleep(100);
-            // 排空 login ACK（会阻塞读，用小容量只读一次）
-            byte[] drain = new byte[1024];
-            slow.getInputStream().read(drain);
+            // 精确排空 login ACK 一整帧（此后不再读取，下行帧将先塞满通告窗口再堆满待发队列）
+            drainOneFrame(slow); // LOGIN ACK
 
-            // 此时不读下行；持续投递直到被降级
-            int accepted = 0, degraded = 0;
-            for (int i = 0; i < 50; i++) {
-                var r = h.downlink.sendReliable("device-001", ("m" + i).getBytes());
-                if (r.accepted()) accepted++;
-                else { degraded++; }
-                if (!r.accepted() && r.errorCode() == GatewayErrorCode.OUTBOUND_BUFFER_FULL.code()) break;
+            // 不读下行；用 1KB 负载持续投递，直到出现 4002（窗口+队列容量合计约数 KB，数十帧内必然触发）
+            int attempts = 0;
+            byte[] payload = new byte[1024];
+            long deadline = System.currentTimeMillis() + 5000;
+            while (System.currentTimeMillis() < deadline
+                    && h.metrics.errorCount(GatewayErrorCode.OUTBOUND_BUFFER_FULL.code()) == 0) {
+                h.downlink.sendReliable("device-001", payload);
+                attempts++;
             }
             // 可靠投递 offer 的首次发送若被 OutboundWriter 接受即认为 accepted；
             // 队列满后 sink 返回 false 时本次帧不入定时器（无资源堆积）
             long fullErrors = h.metrics.errorCount(GatewayErrorCode.OUTBOUND_BUFFER_FULL.code());
-            log.info("[待发上限] 队列容量=3，accepted={} OUTBOUND_BUFFER_FULL计数={}", accepted, fullErrors);
+            log.info("[待发上限] 队列容量=3，attempts={} OUTBOUND_BUFFER_FULL计数={}", attempts, fullErrors);
             assertTrue(fullErrors > 0, "must observe OUTBOUND_BUFFER_FULL degradation");
             slow.close();
         }

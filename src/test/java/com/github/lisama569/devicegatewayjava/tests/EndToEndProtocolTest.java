@@ -22,6 +22,8 @@ class EndToEndProtocolTest {
     @Test
     void stickyAndByteByByteFramesOverTcp() {
         try (GatewayTestHarness h = new GatewayTestHarness(); LoopbackClient c = h.newClient()) {
+            // 协商单独完成（本用例验证的是后续 LOGIN+DATA 的粘包/半包）
+            c.negotiate(999);
             // 粘包：LOGIN + DATA1 + DATA2 拼成一个字节串发送（登录用 seq=1000 避免与数据序号冲突）
             byte[] login = LoopbackClient.frame(MessageType.LOGIN, 0, 1000,
                     LoopbackClient.loginPayload("device-001", "secret-001"));
@@ -52,6 +54,7 @@ class EndToEndProtocolTest {
     @Test
     void corruptFrameThenValidFrameSameConnection() {
         try (GatewayTestHarness h = new GatewayTestHarness(); LoopbackClient c = h.newClient()) {
+            c.negotiate(999);
             c.login("device-001", "secret-001", 1000);
             FrameAsserts.readFrameType(c);
 
@@ -88,6 +91,7 @@ class EndToEndProtocolTest {
     @Test
     void unknownMessageTypeRejectedDistinctlyAndServiceContinues() {
         try (GatewayTestHarness h = new GatewayTestHarness(); LoopbackClient c = h.newClient()) {
+            c.negotiate(999);
             c.login("device-001", "secret-001", 1000);
             FrameAsserts.readFrameType(c);
 

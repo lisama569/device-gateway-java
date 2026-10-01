@@ -10,7 +10,6 @@ import com.github.lisama569.devicegatewayjava.negotiation.HelloPayload;
 import com.github.lisama569.devicegatewayjava.negotiation.NegotiatedProfile;
 import com.github.lisama569.devicegatewayjava.protocol.ErrorFrames;
 import com.github.lisama569.devicegatewayjava.protocol.Frame;
-import com.github.lisama569.devicegatewayjava.protocol.FrameConstants;
 import com.github.lisama569.devicegatewayjava.protocol.FrameDecoder;
 import com.github.lisama569.devicegatewayjava.protocol.FrameCodec;
 import com.github.lisama569.devicegatewayjava.protocol.MessageType;
@@ -85,7 +84,7 @@ public final class FrameDispatcher {
                 ctx.connectionId(), session.deviceId(), frame.type(), frame.seq(),
                 frame.payload() == null ? 0 : frame.payload().length);
         try {
-            enforceNegotiatedConstraints(ctx, frame);
+            enforceConnectionStageAndProfile(ctx, frame);
             switch (frame.type()) {
                 case HELLO -> handleHello(ctx, frame);
                 case LOGIN -> handleLogin(ctx, frame);
@@ -160,20 +159,39 @@ public final class FrameDispatcher {
     }
 
     /**
-     * 协商结果硬约束：帧版本须等于会话版本；帧用到的能力/扩展字段须已协商。
-     * 未协商的会话按默认约束（版本 1、空能力集）。违规只拒绝当前帧，连接保持。
+     * 连接阶段闸门 + 协商结果硬约束。
+     *
+     * 阶段闸门：协商是进入业务前的必经一关。未协商成功时，除 HELLO 以外的任何帧
+     * （含 LOGIN/DATA/ACK/LOGOUT）都以 {@link GatewayErrorCode#NEGOTIATION_REQUIRED}
+     * 明确拒绝——该码专指“协商这一环还没完成”，与未登录(2001)、版本不匹配(1002)、
+     * 能力对不上(1009)明确区分。拒绝只针对当前帧：不写任何会话状态、不按默认版本或
+     * 默认能力放行，连接保持可用，设备随后补发 HELLO 即可继续。
+     *
+     * 硬约束（仅对已协商会话生效）：帧版本须等于选定版本；帧用到的能力/扩展字段须
+     * 已授予。违规只拒绝当前帧，连接保持。
+     *
+     * HELLO 帧本身不受版本/能力约束（其版本字段尚无协商结论可依据），能否进入
+     * handleHello 由阶段闸门按帧类型放行，再由 handleHello 按会话状态判定。
      */
-    private void enforceNegotiatedConstraints(ConnectionContext ctx, Frame frame) {
-        if (frame.type() == MessageType.HELLO) return; // 协商帧本身不受约束
+    private void enforceConnectionStageAndProfile(ConnectionContext ctx, Frame frame) {
         GatewaySession session = ctx.session();
         NegotiatedProfile profile = session.negotiatedProfile();
-        int expectedVersion = profile != null ? profile.version() : FrameConstants.PROTOCOL_VERSION;
+        if (profile == null) {
+            if (frame.type() != MessageType.HELLO) {
+                throw new GatewayException(GatewayErrorCode.NEGOTIATION_REQUIRED,
+                        frame.type() + " rejected: HELLO negotiation must succeed before login or "
+                                + "business frames on this connection");
+            }
+            return; // HELLO：唯一允许在未协商阶段发送的帧，无既定版本/能力可校验
+        }
+        // 已协商：版本与能力集合是会话期硬约束（HELLO 的重发由 handleHello 按状态拒绝）
+        int expectedVersion = profile.version();
         if ((frame.version() & 0xFF) != expectedVersion) {
             throw new GatewayException(GatewayErrorCode.VERSION_MISMATCH,
                     "frame version " + (frame.version() & 0xFF)
                             + " != session negotiated version " + expectedVersion);
         }
-        Set<String> granted = profile != null ? profile.capabilities() : Set.of();
+        Set<String> granted = profile.capabilities();
         Set<Capability> required = Capability.requiredBy(frame);
         List<String> missing = required.stream()
                 .map(Capability::wireName)

@@ -1,5 +1,6 @@
 package com.github.lisama569.devicegatewayjava.support;
 
+import com.github.lisama569.devicegatewayjava.negotiation.HelloPayload;
 import com.github.lisama569.devicegatewayjava.protocol.Frame;
 import com.github.lisama569.devicegatewayjava.protocol.FrameCodec;
 import com.github.lisama569.devicegatewayjava.protocol.MessageType;
@@ -10,6 +11,7 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Random;
 
 /** 确定性回环 TCP 客户端：支持任意分片、任意字节写入、按帧读取。 */
@@ -120,6 +122,30 @@ public final class LoopbackClient implements AutoCloseable {
 
     public static byte[] frame(MessageType type, int flags, long seq, byte[] payload) {
         return FrameCodec.encode(new Frame((byte) 1, type, (byte) flags, seq, payload));
+    }
+
+    /** 构造 HELLO 帧（指定版本区间与能力集）。 */
+    public static byte[] helloFrame(int minVersion, int maxVersion, List<String> caps, long seq) {
+        return FrameCodec.encode(MessageType.HELLO, (byte) 0, seq,
+                HelloPayload.encodeHello(minVersion, maxVersion, caps));
+    }
+
+    /** 标准协商帧：版本区间 1..1、无能力项。 */
+    public static byte[] helloFrame(long seq) {
+        return helloFrame(1, 1, List.of(), seq);
+    }
+
+    /**
+     * 发送标准 HELLO 并读取 HELLO_ACK（协商是 LOGIN 前的必经步骤）。
+     * 若收到的不是 HELLO_ACK（例如被拒绝），断言失败信息会带上实际帧类型。
+     */
+    public void negotiate(long seq) {
+        sendRaw(helloFrame(seq));
+        int type = FrameAsserts.readFrameType(this);
+        if (type != (MessageType.HELLO_ACK.code() & 0xFF)) {
+            throw new IllegalStateException("expected HELLO_ACK after HELLO, got frame type 0x"
+                    + Integer.toHexString(type));
+        }
     }
 
     public void login(String deviceId, String secret, long seq) {

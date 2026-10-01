@@ -12,6 +12,7 @@ public enum GatewayErrorCode {
     NEGOTIATION_VERSION_INCOMPATIBLE(1007, "no common protocol version with gateway"),
     NEGOTIATION_CAPABILITY_UNSUPPORTED(1008, "requested capability not recognized or not supported"),
     CAPABILITY_NOT_NEGOTIATED(1009, "frame uses capability or extension field not negotiated for this session"),
+    NEGOTIATION_REQUIRED(1010, "capability negotiation must complete before login or business frames"),
     NOT_AUTHENTICATED(2001, "session not authenticated"),
     SESSION_CONFLICT(2002, "duplicate login on another connection"),
     SESSION_CLOSED(2003, "session closed"),

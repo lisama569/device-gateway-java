@@ -45,6 +45,7 @@ class ConcurrencyTest {
                     try {
                         start.await();
                         try (LoopbackClient c = h.newClient()) {
+                            c.negotiate(1); // 协商是登录前必经步骤
                             c.login("dev-" + dev, "pass-" + dev, 1);
                             if (FrameAsserts.readFrameType(c) != MessageType.ACK.code()) {
                                 failures.incrementAndGet();
@@ -101,6 +102,7 @@ class ConcurrencyTest {
             h.credentials.register(new com.github.lisama569.devicegatewayjava.auth.DeviceCredential(
                     "dev-x", "pass-x", 0L));
             try (LoopbackClient c = h.newClient()) {
+                c.negotiate(999); // 协商单独完成；本用例验证的是后面 31 帧的随机分片
                 java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
                 bos.write(LoopbackClient.frame(MessageType.LOGIN, 0, 1000,
                         LoopbackClient.loginPayload("dev-x", "pass-x")));
